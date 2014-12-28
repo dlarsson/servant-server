@@ -15,8 +15,9 @@ import Data.Monoid
 import Data.Proxy
 import Data.String
 import Data.String.Conversions
-import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8)
+import Data.Text (Text, split)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import qualified Data.Text as T
 import GHC.TypeLits
 import Network.HTTP.Types hiding (Header)
 import Network.Wai
@@ -94,10 +95,16 @@ type RoutingApplication =
 class HasServer layout where
   type Server layout :: *
   route :: Proxy layout -> Server layout -> RoutingApplication
+  -- Remove matrix parameters from the head of the pathinfo if
+  -- we're done parsing them. Couldn't find a nicer way...
+  maybeStripMatrix :: Proxy layout -> Text -> [Text] -> [Text]
+  maybeStripMatrix Proxy first rest
+    | ";" `T.isPrefixOf` first = rest
+    | otherwise                = first : rest
 
 -- * Instances
 
--- | A server for @a ':<|>' b@ first tries to match the request again the route
+-- | A server for @a ':<|>' b@ first tries to match the request against the route
 --   represented by @a@ and if it fails tries @b@. You must provide a request
 --   handler for each route.
 --
@@ -403,6 +410,139 @@ instance (KnownSymbol sym, HasServer sublayout)
           examine v | v == "true" || v == "1" || v == "" = True
                     | otherwise = False
 
+parseMatrixText = parseQueryText
+
+-- | If you use @'MatrixParam' "author" Text@ in one of the endpoints for your API,
+-- this automatically requires your server-side handler to be a function
+-- that takes an argument of type @'Maybe' 'Text'@.
+--
+-- This lets servant worry about looking it up in the query string
+-- and turning it into a value of the type you specify, enclosed
+-- in 'Maybe', because it may not be there and servant would then
+-- hand you 'Nothing'.
+--
+-- You can control how it'll be converted from 'Text' to your type
+-- by simply providing an instance of 'FromText' for your type.
+--
+-- Example:
+--
+-- > type MyApi = "books" :> MatrixParam "author" Text :> Get [Book]
+-- >
+-- > server :: Server MyApi
+-- > server = getBooksBy
+-- >   where getBooksBy :: Maybe Text -> EitherT (Int, String) IO [Book]
+-- >         getBooksBy Nothing       = ...return all books...
+-- >         getBooksBy (Just author) = ...return books by the given author...
+instance (KnownSymbol sym, FromText a, HasServer sublayout)
+      => HasServer (MatrixParam sym a :> sublayout) where
+
+  type Server (MatrixParam sym a :> sublayout) =
+    Maybe a -> Server sublayout
+
+  route Proxy subserver request respond = case pathInfo request of
+    (first : rest)
+      -> do let querytext = parseMatrixText . encodeUtf8 $ T.tail first
+                param = case lookup paramname querytext of
+                  Nothing       -> Nothing -- param absent from the query string
+                  Just Nothing  -> Nothing -- param present with no value -> Nothing
+                  Just (Just v) -> fromText v -- if present, we try to convert to
+                                        -- the right type
+            route (Proxy :: Proxy sublayout) (subserver param) request{
+                pathInfo = maybeStripMatrix (Proxy :: Proxy sublayout) first rest
+            } respond
+    _ -> route (Proxy :: Proxy sublayout) (subserver Nothing) request respond
+
+    where paramname = cs $ symbolVal (Proxy :: Proxy sym)
+
+  -- Don't consume the path if a matrix parameter follows a matrix parameter
+  -- and 'first' contains a matrix parameter
+  maybeStripMatrix Proxy first rest = first : rest
+
+-- | If you use @'MatrixParams' "authors" Text@ in one of the endpoints for your API,
+-- this automatically requires your server-side handler to be a function
+-- that takes an argument of type @['Text']@.
+--
+-- This lets servant worry about looking up 0 or more values in the query string
+-- associated to @authors@ and turning each of them into a value of
+-- the type you specify.
+--
+-- You can control how the individual values are converted from 'Text' to your type
+-- by simply providing an instance of 'FromText' for your type.
+--
+-- Example:
+--
+-- > type MyApi = "books" :> MatrixParams "authors" Text :> Get [Book]
+-- >
+-- > server :: Server MyApi
+-- > server = getBooksBy
+-- >   where getBooksBy :: [Text] -> EitherT (Int, String) IO [Book]
+-- >         getBooksBy authors = ...return all books by these authors...
+instance (KnownSymbol sym, FromText a, HasServer sublayout)
+      => HasServer (MatrixParams sym a :> sublayout) where
+
+  type Server (MatrixParams sym a :> sublayout) =
+    [a] -> Server sublayout
+
+  route Proxy subserver request respond = case pathInfo request of
+    (first : rest)
+      -> do let matrixtext = parseMatrixText . encodeUtf8 $ T.tail first
+                -- if sym is "foo", we look for matrix parameters
+                -- named "foo" or "foo[]" and call fromText on the
+                -- corresponding values
+                parameters = filter looksLikeParam matrixtext
+                values = catMaybes $ map (convert . snd) parameters
+            route (Proxy :: Proxy sublayout) (subserver values) request{
+                pathInfo = maybeStripMatrix (Proxy :: Proxy sublayout) first rest
+            } respond
+    _ -> route (Proxy :: Proxy sublayout) (subserver []) request respond
+
+    where paramname = cs $ symbolVal (Proxy :: Proxy sym)
+          looksLikeParam (name, _) = name == paramname || name == (paramname <> "[]")
+          convert Nothing = Nothing
+          convert (Just v) = fromText v
+
+  -- Don't consume the path if a matrix parameter follows a matrix parameter
+  maybeStripMatrix Proxy first rest = first : rest
+
+-- | If you use @'MatrixFlag' "published"@ in one of the endpoints for your API,
+-- this automatically requires your server-side handler to be a function
+-- that takes an argument of type 'Bool'.
+--
+-- Example:
+--
+-- > type MyApi = "books" :> MatrixFlag "published" :> Get [Book]
+-- >
+-- > server :: Server MyApi
+-- > server = getBooks
+-- >   where getBooks :: Bool -> EitherT (Int, String) IO [Book]
+-- >         getBooks onlyPublished = ...return all books, or only the ones that are already published, depending on the argument...
+instance (KnownSymbol sym, HasServer sublayout)
+      => HasServer (MatrixFlag sym :> sublayout) where
+
+  type Server (MatrixFlag sym :> sublayout) =
+    Bool -> Server sublayout
+
+  route Proxy subserver request respond =  case pathInfo request of
+    (first : rest)
+      -> do let matrixtext = parseMatrixText . encodeUtf8 $ T.tail first
+                param = case lookup paramname matrixtext of
+                  Just Nothing  -> True  -- param is there, with no value
+                  Just (Just v) -> examine v -- param with a value
+                  Nothing       -> False -- param not in the query string
+
+            route (Proxy :: Proxy sublayout) (subserver param) request{
+                pathInfo = maybeStripMatrix (Proxy :: Proxy sublayout) first rest
+            } respond
+
+    _ -> route (Proxy :: Proxy sublayout) (subserver False) request respond
+
+    where paramname = cs $ symbolVal (Proxy :: Proxy sym)
+          examine v | v == "true" || v == "1" || v == "" = True
+                    | otherwise = False
+
+  -- Don't consume the path if a matrix parameter follows a matrix parameter
+  maybeStripMatrix Proxy first rest = first : rest
+
 -- | Just pass the request to the underlying application and serve its response.
 --
 -- Example:
@@ -450,10 +590,30 @@ instance (KnownSymbol path, HasServer sublayout) => HasServer (path :> sublayout
   type Server (path :> sublayout) = Server sublayout
   route Proxy subserver request respond = case pathInfo request of
     (first : rest)
-      | first == cs (symbolVal proxyPath)
-      -> route (Proxy :: Proxy sublayout) subserver request{
-           pathInfo = rest
-         } respond
+      | parsePath first == cs (symbolVal proxyPath)
+      -> do
+        -- If the path segment contains matrix parameters, push
+        -- them back onto the pathinfo list
+        let mxParams = matrixParameters first
+            rest' = if T.null mxParams
+                    then rest
+                    else T.cons ';' mxParams : rest
+        route (Proxy :: Proxy sublayout) subserver request{
+          pathInfo = rest'
+        } respond
     _ -> respond $ failWith NotFound
 
     where proxyPath = Proxy :: Proxy path
+          parsePath = fst . splitMatrixParameters
+          matrixParameters = snd . splitMatrixParameters
+
+splitAtFirst :: (Char -> Bool) -> Text -> (Text, Text)
+splitAtFirst p = snd . split'
+    where split' = T.foldl' step (False, (T.empty, T.empty))
+          step (False, (a, b)) c | p c     = (True, (a, b))
+                               | otherwise = (False, (T.snoc a c, b))
+          step (True, (a, b))  c           = (True, (a, T.snoc b c))
+
+splitMatrixParameters :: Text -> (Text, Text)
+splitMatrixParameters = splitAtFirst (== ';')
+
