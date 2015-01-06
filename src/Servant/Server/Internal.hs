@@ -448,6 +448,7 @@ instance (KnownSymbol sym, HasServer sublayout)
           examine v | v == "true" || v == "1" || v == "" = True
                     | otherwise = False
 
+parseMatrixText :: B.ByteString -> QueryText
 parseMatrixText = parseQueryText
 
 -- | If you use @'MatrixParam' "author" Text@ in one of the endpoints for your API,
