@@ -19,7 +19,7 @@ import Data.Proxy
 import Data.String
 import Data.String.Conversions
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import Data.Text (Text, split)
+import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.TypeLits
 import Network.HTTP.Types hiding (Header)
@@ -446,6 +446,7 @@ instance (KnownSymbol sym, HasServer sublayout)
           examine v | v == "true" || v == "1" || v == "" = True
                     | otherwise = False
 
+parseMatrixText :: B.ByteString -> QueryText
 parseMatrixText = parseQueryText
 
 -- | If you use @'MatrixParam' "author" Text@ in one of the endpoints for your API,
