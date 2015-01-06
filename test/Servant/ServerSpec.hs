@@ -26,6 +26,7 @@ import Servant.API.Get (Get)
 import Servant.API.ReqBody (ReqBody)
 import Servant.API.Post (Post)
 import Servant.API.QueryParam (QueryParam, QueryParams, QueryFlag)
+import Servant.API.MatrixParam (MatrixParam, MatrixParams, MatrixFlag)
 import Servant.API.Raw (Raw)
 import Servant.API.Sub ((:>))
 import Servant.API.Alternative ((:<|>)((:<|>)))
@@ -69,6 +70,7 @@ spec = do
   captureSpec
   getSpec
   queryParamSpec
+  matrixParamSpec
   postSpec
   rawSpec
   unionSpec
@@ -183,6 +185,66 @@ queryParamSpec = do
             rawQueryString = params3',
             queryString = parseQuery params3',
             pathInfo = ["b"]
+           }
+          liftIO $
+            decode' (simpleBody response3') `shouldBe` Just alice{
+              name = "ALICE"
+             }
+
+type MatrixParamApi = "a" :> MatrixParam "name" String :> Get Person
+                :<|> "b" :> MatrixParams "names" String :> "bsub" :> MatrixParams "names" String :> Get Person
+                :<|> "c" :> MatrixFlag "capitalize" :> Get Person
+
+matrixParamApi :: Proxy MatrixParamApi
+matrixParamApi = Proxy
+
+mpServer :: Server MatrixParamApi
+mpServer = matrixParamServer :<|> mpNames :<|> mpCapitalize
+
+  where mpNames (_:name2:_) _ = return alice { name = name2 }
+        mpNames _           _ = return alice
+
+        mpCapitalize False = return alice
+        mpCapitalize True  = return alice { name = map toUpper (name alice) }
+
+        matrixParamServer (Just name) = return alice{name = name}
+        matrixParamServer Nothing = return alice
+
+matrixParamSpec :: Spec
+matrixParamSpec = do
+  describe "Servant.API.MatrixParam" $ do
+      it "allows to retrieve simple matrix parameters" $
+        (flip runSession) (serve matrixParamApi mpServer) $ do
+          response1 <- Network.Wai.Test.request defaultRequest{
+            pathInfo = ["a;name=bob"]
+           }
+          liftIO $ do
+            decode' (simpleBody response1) `shouldBe` Just alice{
+              name = "bob"
+             }
+
+      it "allows to retrieve lists in matrix parameters" $
+        (flip runSession) (serve matrixParamApi mpServer) $ do
+          response2 <- Network.Wai.Test.request defaultRequest{
+            pathInfo = ["b;names=bob;names=john", "bsub;names=anna;names=sarah"]
+           }
+          liftIO $
+            decode' (simpleBody response2) `shouldBe` Just alice{
+              name = "john"
+             }
+
+      it "allows to retrieve value-less matrix parameters" $
+        (flip runSession) (serve matrixParamApi mpServer) $ do
+          response3 <- Network.Wai.Test.request defaultRequest{
+            pathInfo = ["c;capitalize"]
+           }
+          liftIO $
+            decode' (simpleBody response3) `shouldBe` Just alice{
+              name = "ALICE"
+             }
+
+          response3' <- Network.Wai.Test.request defaultRequest{
+            pathInfo = ["c;capitalize="]
            }
           liftIO $
             decode' (simpleBody response3') `shouldBe` Just alice{
