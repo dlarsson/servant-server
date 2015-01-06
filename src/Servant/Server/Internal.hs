@@ -190,14 +190,19 @@ instance (KnownSymbol capture, FromText a, HasServer sublayout)
 
   route Proxy subserver request respond = case pathInfo request of
     (first : rest)
-      -> case captured captureProxy first of
+      -> let (first', mxParams) = splitMatrixParameters first
+             rest' = if T.null mxParams
+                     then rest
+                     else T.cons ';' mxParams : rest
+         in case captured captureProxy first' of
            Nothing  -> respond $ failWith NotFound
            Just v   -> route (Proxy :: Proxy sublayout) (subserver v) request{
-                         pathInfo = rest
+                         pathInfo = rest'
                        } respond
     _ -> respond $ failWith NotFound
 
     where captureProxy = Proxy :: Proxy (Capture capture a)
+           
 
 -- | If you have a 'Delete' endpoint in your API,
 -- the handler for this endpoint is meant to delete

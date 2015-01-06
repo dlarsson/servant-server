@@ -194,21 +194,24 @@ queryParamSpec = do
 type MatrixParamApi = "a" :> MatrixParam "name" String :> Get Person
                 :<|> "b" :> MatrixParams "names" String :> "bsub" :> MatrixParams "names" String :> Get Person
                 :<|> "c" :> MatrixFlag "capitalize" :> Get Person
+                :<|> "d" :> Capture "foo" String :> MatrixParam "name" String :> MatrixFlag "capitalize" :> "dsub" :> Get Person
 
 matrixParamApi :: Proxy MatrixParamApi
 matrixParamApi = Proxy
 
 mpServer :: Server MatrixParamApi
-mpServer = matrixParamServer :<|> mpNames :<|> mpCapitalize
+mpServer = matrixParamServer :<|> mpNames :<|> mpCapitalize alice :<|> mpComplex
 
   where mpNames (_:name2:_) _ = return alice { name = name2 }
         mpNames _           _ = return alice
 
-        mpCapitalize False = return alice
-        mpCapitalize True  = return alice { name = map toUpper (name alice) }
+        mpCapitalize p False = return p
+        mpCapitalize p True  = return p { name = map toUpper (name p) }
 
         matrixParamServer (Just name) = return alice{name = name}
         matrixParamServer Nothing = return alice
+
+        mpComplex _ name cap = matrixParamServer name >>= flip mpCapitalize cap
 
 matrixParamSpec :: Spec
 matrixParamSpec = do
@@ -250,6 +253,17 @@ matrixParamSpec = do
             decode' (simpleBody response3') `shouldBe` Just alice{
               name = "ALICE"
              }
+
+      it "allows to retrieve matrix parameters on captured segments" $
+        (flip runSession) (serve matrixParamApi mpServer) $ do
+          response4 <- Network.Wai.Test.request defaultRequest{
+            pathInfo = ["d", "foo;name=stephen;capitalize", "dsub"]
+           }
+          liftIO $
+            decode' (simpleBody response4) `shouldBe` Just alice{
+              name = "STEPHEN"
+             }
+
 
 type PostApi =
        ReqBody Person :> Post Integer
