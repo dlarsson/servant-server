@@ -13,6 +13,7 @@ import Data.Aeson
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import Data.IORef
+import Data.List (unfoldr)
 import Data.Maybe (catMaybes)
 import Data.Monoid
 import Data.Proxy
@@ -107,7 +108,7 @@ isMismatch _             = False
 
 -- | Like `null . pathInfo`, but works with redundant trailing slashes.
 pathIsEmpty :: Request -> Bool
-pathIsEmpty = f . pathInfo
+pathIsEmpty = f . processedPathInfo
   where
     f []   = True
     f [""] = True
@@ -128,26 +129,31 @@ type RoutingApplication =
      Request -- ^ the request, the field 'pathInfo' may be modified by url routing
   -> (RouteResult Response -> IO ResponseReceived) -> IO ResponseReceived
 
+splitMatrixParameters :: Text -> (Text, Text)
+splitMatrixParameters = T.break (== ';')
+
+parsePathInfo :: Request -> [Text]
+parsePathInfo = filter (/= "") . mergePairs . map splitMatrixParameters . pathInfo
+  where mergePairs = concat . unfoldr pairToList
+        pairToList []          = Nothing
+        pairToList ((a, b):xs) = Just ([a, b], xs)
+
+-- | Returns a processed pathInfo from the request.
+--
+-- In order to handle matrix parameters in the request correctly, the raw pathInfo needs to be
+-- processed, so routing works as intended. Therefor this function should be used to access
+-- the pathInfo for routing purposes.
+processedPathInfo :: Request -> [Text]
+processedPathInfo r =
+  case pinfo of
+    (x:xs) | T.head x == ';' -> xs
+    _                        -> pinfo
+  where pinfo = parsePathInfo r
+
 class HasServer layout where
   type Server layout :: *
   route :: Proxy layout -> Server layout -> RoutingApplication
 
-  -- | Possibly push matrix parameters back into the pathinfo list.
-  --
-  -- If matrix parameters are found in this path segment, only
-  -- push them back onto the pathinfo list if the next type in
-  -- the route chain is some kind of matrix parameter
-  maybePushMatrix :: Proxy layout -> Text -> [Text] -> [Text]
-  maybePushMatrix Proxy _ rest = rest -- The default implementation always skips pushing matrix parameters
-
-  -- | Possibly pop matrix parameters from the pathinfo list.
-  -- 
-  -- Remove matrix parameters from the head of the pathinfo if
-  -- we're done parsing them (i.e. if 
-  maybePopMatrix :: Proxy layout -> Text -> [Text] -> [Text]
-  maybePopMatrix Proxy first rest
-    | ";" `T.isPrefixOf` first = rest
-    | otherwise                = first : rest
 
 -- * Instances
 
@@ -199,18 +205,16 @@ instance (KnownSymbol capture, FromText a, HasServer sublayout)
   type Server (Capture capture a :> sublayout) =
      a -> Server sublayout
 
-  route Proxy subserver request respond = case pathInfo request of
+  route Proxy subserver request respond = case processedPathInfo request of
     (first : rest)
-      -> let (first', mxParams) = splitMatrixParameters first
-         in case captured captureProxy first' of
+      -> case captured captureProxy first of
            Nothing  -> respond $ failWith NotFound
            Just v   -> route (Proxy :: Proxy sublayout) (subserver v) request{
-                         pathInfo = maybePushMatrix sublayoutProxy mxParams rest
+                         pathInfo = rest
                        } respond
     _ -> respond $ failWith NotFound
 
     where captureProxy = Proxy :: Proxy (Capture capture a)
-          sublayoutProxy = Proxy :: Proxy sublayout
            
 
 -- | If you have a 'Delete' endpoint in your API,
@@ -490,29 +494,19 @@ instance (KnownSymbol sym, FromText a, HasServer sublayout)
   type Server (MatrixParam sym a :> sublayout) =
     Maybe a -> Server sublayout
 
-  route Proxy subserver request respond = case pathInfo request of
-    (first : rest)
+  route Proxy subserver request respond = case parsePathInfo request of
+    (first : _)
       -> do let querytext = parseMatrixText . encodeUtf8 $ T.tail first
                 param = case lookup paramname querytext of
                   Nothing       -> Nothing -- param absent from the query string
                   Just Nothing  -> Nothing -- param present with no value -> Nothing
                   Just (Just v) -> fromText v -- if present, we try to convert to
                                         -- the right type
-            route (Proxy :: Proxy sublayout) (subserver param) request{
-                pathInfo = maybePopMatrix (Proxy :: Proxy sublayout) first rest
-            } respond
+            putStrLn $ "matrix param " ++ T.unpack paramname ++ " has value " ++ show (fmap (fmap T.unpack) (lookup paramname querytext))
+            route (Proxy :: Proxy sublayout) (subserver param) request respond
     _ -> route (Proxy :: Proxy sublayout) (subserver Nothing) request respond
 
     where paramname = cs $ symbolVal (Proxy :: Proxy sym)
-
-  maybePushMatrix Proxy first rest
-    -- Make sure the parent route keeps the matrix parameters
-    | T.null first = rest
-    | otherwise    = T.cons ';' first : rest
-
-  -- Don't consume the path if a matrix parameter follows a matrix parameter
-  -- and 'first' contains a matrix parameter
-  maybePopMatrix Proxy first rest = first : rest
 
 
 -- | If you use @'MatrixParams' "authors" Text@ in one of the endpoints for your API,
@@ -540,31 +534,21 @@ instance (KnownSymbol sym, FromText a, HasServer sublayout)
   type Server (MatrixParams sym a :> sublayout) =
     [a] -> Server sublayout
 
-  route Proxy subserver request respond = case pathInfo request of
-    (first : rest)
+  route Proxy subserver request respond = case parsePathInfo request of
+    (first : _)
       -> do let matrixtext = parseMatrixText . encodeUtf8 $ T.tail first
                 -- if sym is "foo", we look for matrix parameters
                 -- named "foo" or "foo[]" and call fromText on the
                 -- corresponding values
                 parameters = filter looksLikeParam matrixtext
                 values = catMaybes $ map (convert . snd) parameters
-            route (Proxy :: Proxy sublayout) (subserver values) request{
-                pathInfo = maybePopMatrix (Proxy :: Proxy sublayout) first rest
-            } respond
+            route (Proxy :: Proxy sublayout) (subserver values) request respond
     _ -> route (Proxy :: Proxy sublayout) (subserver []) request respond
 
     where paramname = cs $ symbolVal (Proxy :: Proxy sym)
           looksLikeParam (name, _) = name == paramname || name == (paramname <> "[]")
           convert Nothing = Nothing
           convert (Just v) = fromText v
-
-  maybePushMatrix Proxy first rest
-    -- Make sure the parent route keeps the matrix parameters
-    | T.null first = rest
-    | otherwise    = T.cons ';' first : rest
-
-  -- Don't consume the path if a matrix parameter follows a matrix parameter
-  maybePopMatrix Proxy first rest = first : rest
 
 
 -- | If you use @'MatrixFlag' "published"@ in one of the endpoints for your API,
@@ -585,32 +569,21 @@ instance (KnownSymbol sym, HasServer sublayout)
   type Server (MatrixFlag sym :> sublayout) =
     Bool -> Server sublayout
 
-  route Proxy subserver request respond =  case pathInfo request of
-    (first : rest)
+  route Proxy subserver request respond =  case parsePathInfo request of
+    (first : _)
       -> do let matrixtext = parseMatrixText . encodeUtf8 $ T.tail first
                 param = case lookup paramname matrixtext of
                   Just Nothing  -> True  -- param is there, with no value
                   Just (Just v) -> examine v -- param with a value
                   Nothing       -> False -- param not in the query string
 
-            route (Proxy :: Proxy sublayout) (subserver param) request{
-                pathInfo = maybePopMatrix (Proxy :: Proxy sublayout) first rest
-            } respond
+            route (Proxy :: Proxy sublayout) (subserver param) request respond
 
     _ -> route (Proxy :: Proxy sublayout) (subserver False) request respond
 
     where paramname = cs $ symbolVal (Proxy :: Proxy sym)
           examine v | v == "true" || v == "1" || v == "" = True
                     | otherwise = False
-
-  maybePushMatrix Proxy first rest
-    -- Make sure the parent route keeps the matrix parameters
-    | T.null first = rest
-    | otherwise    = T.cons ';' first : rest
-
-  -- Don't consume the path if a matrix parameter follows a matrix parameter
-  maybePopMatrix Proxy first rest = first : rest
-
 
 -- | Just pass the request to the underlying application and serve its response.
 --
@@ -657,27 +630,16 @@ instance (FromJSON a, HasServer sublayout)
 -- pass the rest of the request path to @sublayout@.
 instance (KnownSymbol path, HasServer sublayout) => HasServer (path :> sublayout) where
   type Server (path :> sublayout) = Server sublayout
-  route Proxy subserver request respond = case pathInfo request of
+  route Proxy subserver request respond = case processedPathInfo request of
     (first : rest)
-      | getPath first == cs (symbolVal proxyPath)
-      -> route sublayoutProxy subserver request{
-           pathInfo = maybePushMatrix sublayoutProxy (getMxParams first) rest
+      | first == cs (symbolVal proxyPath)
+      -> do
+        putStrLn $ "routing " ++ symbolVal (Proxy :: Proxy path)
+        putStrLn . show $ pathInfo request
+        putStrLn . show $ processedPathInfo request
+        route (Proxy :: Proxy sublayout) subserver request{
+           pathInfo = rest
          } respond
     _ -> respond $ failWith NotFound
 
     where proxyPath = Proxy :: Proxy path
-          sublayoutProxy = Proxy :: Proxy sublayout
-          getPath = fst . splitMatrixParameters
-          getMxParams = snd . splitMatrixParameters
-
-
-splitAtFirst :: (Char -> Bool) -> Text -> (Text, Text)
-splitAtFirst p = snd . split'
-    where split' = T.foldl' step (False, (T.empty, T.empty))
-          step (False, (a, b)) c | p c       = (True, (a, b))
-                                 | otherwise = (False, (T.snoc a c, b))
-          step (True, (a, b))  c             = (True, (a, T.snoc b c))
-
-splitMatrixParameters :: Text -> (Text, Text)
-splitMatrixParameters = splitAtFirst (== ';')
-

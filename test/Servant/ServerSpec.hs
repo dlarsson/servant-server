@@ -191,6 +191,17 @@ queryParamSpec = do
               name = "ALICE"
              }
 
+          let params3'' = "?unknown="
+          response3' <- Network.Wai.Test.request defaultRequest{
+            rawQueryString = params3'',
+            queryString = parseQuery params3'',
+            pathInfo = ["b"]
+           }
+          liftIO $
+            decode' (simpleBody response3') `shouldBe` Just alice{
+              name = "Alice"
+             }
+
 type MatrixParamApi = "a" :> MatrixParam "name" String :> Get Person
                 :<|> "b" :> MatrixParams "names" String :> "bsub" :> MatrixParams "names" String :> Get Person
                 :<|> "c" :> MatrixFlag "capitalize" :> Get Person
