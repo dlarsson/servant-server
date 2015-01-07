@@ -194,7 +194,7 @@ queryParamSpec = do
 type MatrixParamApi = "a" :> MatrixParam "name" String :> Get Person
                 :<|> "b" :> MatrixParams "names" String :> "bsub" :> MatrixParams "names" String :> Get Person
                 :<|> "c" :> MatrixFlag "capitalize" :> Get Person
-                :<|> "d" :> Capture "foo" String :> MatrixParam "name" String :> MatrixFlag "capitalize" :> "dsub" :> Get Person
+                :<|> "d" :> Capture "foo" Integer :> MatrixParam "name" String :> MatrixFlag "capitalize" :> "dsub" :> Get Person
 
 matrixParamApi :: Proxy MatrixParamApi
 matrixParamApi = Proxy
@@ -211,7 +211,8 @@ mpServer = matrixParamServer :<|> mpNames :<|> mpCapitalize alice :<|> mpComplex
         matrixParamServer (Just name) = return alice{name = name}
         matrixParamServer Nothing = return alice
 
-        mpComplex _ name cap = matrixParamServer name >>= flip mpCapitalize cap
+        mpAge age p = return p { age = age }
+        mpComplex capture name cap = matrixParamServer name >>= flip mpCapitalize cap >>= mpAge capture
 
 matrixParamSpec :: Spec
 matrixParamSpec = do
@@ -257,13 +258,22 @@ matrixParamSpec = do
       it "allows to retrieve matrix parameters on captured segments" $
         (flip runSession) (serve matrixParamApi mpServer) $ do
           response4 <- Network.Wai.Test.request defaultRequest{
-            pathInfo = ["d", "foo;name=stephen;capitalize", "dsub"]
+            pathInfo = ["d", "12;name=stephen;capitalize", "dsub"]
            }
           liftIO $
             decode' (simpleBody response4) `shouldBe` Just alice{
-              name = "STEPHEN"
+              name = "STEPHEN",
+              age = 12
              }
 
+          response4' <- Network.Wai.Test.request defaultRequest{
+            pathInfo = ["d;ignored=1", "5", "dsub"]
+           }
+          liftIO $
+            decode' (simpleBody response4') `shouldBe` Just alice{
+              name = "Alice",
+              age = 5
+             }
 
 type PostApi =
        ReqBody Person :> Post Integer
