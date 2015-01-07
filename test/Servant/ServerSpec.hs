@@ -8,31 +8,6 @@
 module Servant.ServerSpec where
 
 
-<<<<<<< HEAD
-import Control.Monad.Trans.Either
-import Data.Aeson
-import Data.Char
-import Data.Proxy
-import Data.String
-import Data.String.Conversions
-import GHC.Generics
-import Network.HTTP.Types
-import Network.Wai
-import Network.Wai.Test
-import Test.Hspec
-import Test.Hspec.Wai
-
-import Servant.API.Capture
-import Servant.API.Get
-import Servant.API.ReqBody
-import Servant.API.Post
-import Servant.API.QueryParam
-import Servant.API.MatrixParam
-import Servant.API.Raw
-import Servant.API.Sub
-import Servant.API.Alternative
-import Servant.Server
-=======
 import Control.Monad.Trans.Either (EitherT, left)
 import Data.Aeson (ToJSON, FromJSON, encode, decode')
 import Data.Char (toUpper)
@@ -51,11 +26,11 @@ import Servant.API.Get (Get)
 import Servant.API.ReqBody (ReqBody)
 import Servant.API.Post (Post)
 import Servant.API.QueryParam (QueryParam, QueryParams, QueryFlag)
+import Servant.API.MatrixParam (MatrixParam, MatrixParams, MatrixFlag)
 import Servant.API.Raw (Raw)
 import Servant.API.Sub ((:>))
 import Servant.API.Alternative ((:<|>)((:<|>)))
 import Servant.Server (Server, serve)
->>>>>>> upstream/master
 
 
 -- * test data types
