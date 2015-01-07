@@ -504,7 +504,6 @@ instance (KnownSymbol sym, FromText a, HasServer sublayout)
                   Just Nothing  -> Nothing -- param present with no value -> Nothing
                   Just (Just v) -> fromText v -- if present, we try to convert to
                                         -- the right type
-            putStrLn $ "matrix param " ++ T.unpack paramname ++ " has value " ++ show (fmap (fmap T.unpack) (lookup paramname querytext))
             route (Proxy :: Proxy sublayout) (subserver param) request respond
     _ -> route (Proxy :: Proxy sublayout) (subserver Nothing) request respond
 
@@ -635,11 +634,7 @@ instance (KnownSymbol path, HasServer sublayout) => HasServer (path :> sublayout
   route Proxy subserver request respond = case processedPathInfo request of
     (first : rest)
       | first == cs (symbolVal proxyPath)
-      -> do
-        putStrLn $ "routing " ++ symbolVal (Proxy :: Proxy path)
-        putStrLn . show $ pathInfo request
-        putStrLn . show $ processedPathInfo request
-        route (Proxy :: Proxy sublayout) subserver request{
+      -> route (Proxy :: Proxy sublayout) subserver request{
            pathInfo = rest
          } respond
     _ -> respond $ failWith NotFound
