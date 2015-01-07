@@ -8,6 +8,7 @@
 module Servant.ServerSpec where
 
 
+<<<<<<< HEAD
 import Control.Monad.Trans.Either
 import Data.Aeson
 import Data.Char
@@ -31,6 +32,30 @@ import Servant.API.Raw
 import Servant.API.Sub
 import Servant.API.Alternative
 import Servant.Server
+=======
+import Control.Monad.Trans.Either (EitherT, left)
+import Data.Aeson (ToJSON, FromJSON, encode, decode')
+import Data.Char (toUpper)
+import Data.Proxy (Proxy(Proxy))
+import Data.String (fromString)
+import Data.String.Conversions (cs)
+import GHC.Generics (Generic)
+import Network.HTTP.Types (parseQuery, ok200)
+import Network.Wai (Application, Request, responseLBS, pathInfo, queryString, rawQueryString)
+import Network.Wai.Test (runSession, request, defaultRequest, simpleBody)
+import Test.Hspec (Spec, describe, it, shouldBe)
+import Test.Hspec.Wai (liftIO, with, get, post, shouldRespondWith, matchStatus)
+
+import Servant.API.Capture (Capture)
+import Servant.API.Get (Get)
+import Servant.API.ReqBody (ReqBody)
+import Servant.API.Post (Post)
+import Servant.API.QueryParam (QueryParam, QueryParams, QueryFlag)
+import Servant.API.Raw (Raw)
+import Servant.API.Sub ((:>))
+import Servant.API.Alternative ((:<|>)((:<|>)))
+import Servant.Server (Server, serve)
+>>>>>>> upstream/master
 
 
 -- * test data types
@@ -96,8 +121,8 @@ captureSpec = do
 
     with (return (serve
         (Proxy :: Proxy (Capture "captured" String :> Raw))
-        (\ "captured" request respond ->
-            respond $ responseLBS ok200 [] (cs $ show $ pathInfo request)))) $ do
+        (\ "captured" request_ respond ->
+            respond $ responseLBS ok200 [] (cs $ show $ pathInfo request_)))) $ do
       it "strips the captured path snippet from pathInfo" $ do
         get "/captured/foo" `shouldRespondWith` (fromString (show ["foo" :: String]))
 
@@ -136,7 +161,7 @@ qpServer = queryParamServer :<|> qpNames :<|> qpCapitalize
         qpCapitalize False = return alice
         qpCapitalize True  = return alice { name = map toUpper (name alice) }
 
-        queryParamServer (Just name) = return alice{name = name}
+        queryParamServer (Just name_) = return alice{name = name_}
         queryParamServer Nothing = return alice
 
 queryParamSpec :: Spec
@@ -319,7 +344,7 @@ type RawApi = "foo" :> Raw
 rawApi :: Proxy RawApi
 rawApi = Proxy
 rawApplication :: Show a => (Request -> a) -> Application
-rawApplication f request respond = respond $ responseLBS ok200 [] (cs $ show $ f request)
+rawApplication f request_ respond = respond $ responseLBS ok200 [] (cs $ show $ f request_)
 
 rawSpec :: Spec
 rawSpec = do
@@ -361,7 +386,7 @@ unionSpec = do
         liftIO $ do
           decode' (simpleBody response) `shouldBe`
             Just alice
-        response <- get "/bar"
+        response_ <- get "/bar"
         liftIO $ do
-          decode' (simpleBody response) `shouldBe`
+          decode' (simpleBody response_) `shouldBe`
             Just jerry
